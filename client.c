@@ -15,8 +15,8 @@
 
 typedef struct {
     char filename[1024];
-    int file_type;
     char content[4096];
+    int file_type;
 }SocketData;
 
 
@@ -79,7 +79,7 @@ void send_directory_content(int socket, const char *dirname){
     DIR *dir;
     struct dirent *entry;
     SocketData socketData;
-
+    char buffer[1024];
     dir = opendir(dirname);
     if (dir == NULL)
     {
@@ -87,22 +87,28 @@ void send_directory_content(int socket, const char *dirname){
         return;
     }
 
-     while ((entry = readdir(dir)) != NULL) {
-
-        if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
-
-            strcpy(socketData.filename, entry->d_name);
-            socketData.file_type = entry->d_type;
-
-            write(socket, &socketData, sizeof(socketData));
-
-            // send(socket, entry->d_name, strlen(entry->d_name), 0);
-
-            // send(socket, "\n", 1, 0);
-        }
 
 
-    }
+    read(socket, buffer, sizeof(buffer));
+    printf("%s",buffer);
+
+
+    //  while ((entry = readdir(dir)) != NULL) {
+
+    //     if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
+
+    //         strcpy(socketData.filename, entry->d_name);
+    //         socketData.file_type = entry->d_type;
+
+    //         write(socket, &socketData, sizeof(socketData));
+
+    //         // send(socket, entry->d_name, strlen(entry->d_name), 0);
+
+    //         // send(socket, "\n", 1, 0);
+    //     }
+
+
+    // }
 
     closedir(dir);
     

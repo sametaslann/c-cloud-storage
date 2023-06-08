@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 #include <unistd.h>
 #include <pthread.h>
 #include <errno.h>
@@ -9,6 +10,8 @@
 #include <sys/time.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <sys/inotify.h>
+
 
 #include "common.c"
 
@@ -16,16 +19,25 @@
 typedef struct {
     char filename[1024];
     int file_type;
+    int status;
     char content[4096];
 }SocketData;
 
 
-pthread_t* threadPool;
 
+//Global Variables
+pthread_t* threadPool;
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
-
 Queue *queue;
+char *dirname;
+
+
+void equalize(){
+
+    
+
+}
 
 
 
@@ -58,27 +70,108 @@ void* threadFunction(void *arg){
 
         else /*If thread is already working with a client communication*/
         { 
-            while ((num_bytes = read(client_sock, &socketData, sizeof(socketData))) > 0)
-            {
 
-                printf("Filename: %s -", socketData.filename);
-                printf("File Type: %d -", socketData.file_type);
-                printf("Content: %ld \n", strlen(socketData.content));
 
-                if (strlen(socketData.content) != 0) 
-                {
-                    copy_file_content();
-                    //TODO: COPY THE FILE CONTENT
+            int fd = inotify_init1(IN_NONBLOCK); // Returns a file descriptor (fd) for the inotify instance
+            if (fd == -1) {
+                perror("[-] inotify_init1");
+                return -1;
+            }
+            int wd = inotify_add_watch(fd, dirname, IN_ALL_EVENTS);
+            if (wd == -1) {
+                perror("inotify_add_watch");
+                return -1;
+            }    
+
+
+            while (1) {
+                char buffer[4096];
+                ssize_t bytesRead = read(fd, buffer, sizeof(buffer));
+                if (bytesRead == -1) {
+                    // perror("read");
+                    // return -1;
                 }
-                else
-                {
-                    create_file();
-                    //TODO: CREATE THE GIVEN FILE
+                
+                // Process the events in the buffer
+                // Each event is of type struct inotify_event
+                struct inotify_event* event;
+                struct stat fileStat;
+                for (char* ptr = buffer; ptr < buffer + bytesRead; ptr += sizeof(struct inotify_event) + event->len) {
+                    event = (struct inotify_event*)ptr;
+
+                    // Get the file type
+                    struct stat fileStat;
+                    if (lstat(event->name, &fileStat) == -1) {
+                        perror("lstat");
+                        continue;
+                    }
+
+                    // Check file type
+                    if (S_ISFIFO(fileStat.st_mode)) {
+
+                        socketData.file_type = 1;
+                        // write(client_sock, &socketData, sizeof(socketData));
+
+                    } else if (S_ISDIR(fileStat.st_mode)) {
+                        socketData.file_type = 2;
+
+
+                    } else if (S_ISREG(fileStat.st_mode)) {
+                        socketData.file_type = 3;
+                    
+                    
+                    
+                    }
+
+                    if (event->mask & IN_CREATE){
+                        
+                        socketData.status = 1;
+
+                        write(client_sock, "Bisiler oldu kral", sizeof("Bisiler oldu kral"));
+                        printf("Directory or file Created\n");
+
+
+
+                    }
+                    
+                    if (event->mask & IN_MODIFY)
+                        socketData.status = 2;
+
+                        printf("Directory or file Modified\n");
+
+                    if (event->mask & IN_DELETE)
+                        socketData.status = 3;
+
+                        printf("Directory or file Deleted\n"); 
+                    
+                    
+                    // You can access the event details like filename using event->name
                 }
+            }
+
+
+
+            // while ((num_bytes = read(client_sock, &socketData, sizeof(socketData))) > 0)
+            // {
+
+            //     printf("Filename: %s -", socketData.filename);
+            //     printf("File Type: %d -", socketData.file_type);
+            //     printf("Content: %ld \n", strlen(socketData.content));
+
+            //     if (strlen(socketData.content) != 0) 
+            //     {
+            //         copy_file_content();
+            //         //TODO: COPY THE FILE CONTENT
+            //     }
+            //     else
+            //     {
+            //         create_file();
+            //         //TODO: CREATE THE GIVEN FILE
+            //     }
                 
 
 
-            }
+            // }
         }
         
     }
@@ -101,7 +194,7 @@ int main(int argc, char *argv[]){
     }
     
     char *ip = "127.0.0.1";
-    char *directory = argv[1];
+    dirname = argv[1];
     int threadPool_size = atoi(argv[2]);
     int port = atoi(argv[3]);
    
@@ -161,24 +254,17 @@ int main(int argc, char *argv[]){
 
     while (1)
     {
-
-
         addr_size = sizeof(client_addr);
         client_sock = accept(server_sock, (struct sockaddr*)&client_addr, &addr_size);
 
         char *client_address = inet_ntoa(client_addr.sin_addr);
         printf("[+] Client connected | IP ADRESS: %s |\n",client_address);
-
-
-        
+    
         pthread_mutex_lock(&mutex);
         enqueue(queue, client_sock);
         pthread_cond_signal(&cond);
         pthread_mutex_unlock(&mutex);
     
-        
-        
-
     }
  
 

@@ -1,0 +1,111 @@
+char buffer[4096];
+        ssize_t bytesRead;
+
+        while ((bytesRead = read(fd, buffer, sizeof(buffer))) == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // No data available yet, wait and retry
+                usleep(100000);  // Sleep for 100 milliseconds
+            } else {
+                perror("read");
+                return -1;
+            }
+        }char buffer[4096];
+        ssize_t bytesRead;
+
+        while ((bytesRead = read(fd, buffer, sizeof(buffer))) == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // No data available yet, wait and retry
+                usleep(100000);  // Sleep for 100 milliseconds
+            } else {
+                perror("read");
+                return -1;
+            }
+        }char buffer[4096];
+        ssize_t bytesRead;
+
+        while ((bytesRead = read(fd, buffer, sizeof(buffer))) == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // No data available yet, wait and retry
+                usleep(100000);  // Sleep for 100 milliseconds
+            } else {
+                perror("read");
+                return -1;
+            }
+        }char buffer[4096];
+        ssize_t bytesRead;
+
+        while ((bytesRead = read(fd, buffer, sizeof(buffer))) == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // No data available yet, wait and retry
+                usleep(100000);  // Sleep for 100 milliseconds
+            } else {
+                perror("read");
+                return -1;
+            }
+        }char buffer[4096];
+        ssize_t bytesRead;
+
+        while ((bytesRead = read(fd, buffer, sizeof(buffer))) == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // No data available yet, wait and retry
+                usleep(100000);  // Sleep for 100 milliseconds
+            } else {
+                perror("read");
+                return -1;
+            }
+        }char buffer[4096];
+        ssize_t bytesRead;
+
+        while ((bytesRead = read(fd, buffer, sizeof(buffer))) == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // No data available yet, wait and retry
+                usleep(100000);  // Sleep for 100 milliseconds
+            } else {
+                perror("read");
+                return -1;
+            }
+        }char buffer[4096];
+        ssize_t bytesRead;
+
+        while ((bytesRead = read(fd, buffer, sizeof(buffer))) == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // No data available yet, wait and retry
+                usleep(100000);  // Sleep for 100 milliseconds
+            } else {
+                perror("read");
+                return -1;
+            }
+        }char buffer[4096];
+        ssize_t bytesRead;
+
+        while ((bytesRead = read(fd, buffer, sizeof(buffer))) == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // No data available yet, wait and retry
+                usleep(100000);  // Sleep for 100 milliseconds
+            } else {
+                perror("read");
+                return -1;
+            }
+        }char buffer[4096];
+        ssize_t bytesRead;
+
+        while ((bytesRead = read(fd, buffer, sizeof(buffer))) == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // No data available yet, wait and retry
+                usleep(100000);  // Sleep for 100 milliseconds
+            } else {
+                perror("read");
+                return -1;
+            }
+        }char buffer[4096];
+        ssize_t bytesRead;
+
+        while ((bytesRead = read(fd, buffer, sizeof(buffer))) == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // No data available yet, wait and retry
+                usleep(100000);  // Sleep for 100 milliseconds
+            } else {
+                perror("read");
+                return -1;
+            }
+        }
