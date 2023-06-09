@@ -70,83 +70,26 @@ void* threadFunction(void *arg){
 
         else /*If thread is already working with a client communication*/
         { 
+            
 
+            
+                // Get the initial timestamps of all files in the directory
+            struct dirent* entry;
+            while ((entry = readdir(directory)) != NULL) {
+                if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+                    continue;
 
-            int fd = inotify_init1(IN_NONBLOCK); // Returns a file descriptor (fd) for the inotify instance
-            if (fd == -1) {
-                perror("[-] inotify_init1");
-                return -1;
-            }
-            int wd = inotify_add_watch(fd, dirname, IN_ALL_EVENTS);
-            if (wd == -1) {
-                perror("inotify_add_watch");
-                return -1;
-            }    
+                char file_path[256];
+                snprintf(file_path, sizeof(file_path), "%s/%s", directory_path, entry->d_name);
 
-
-            while (1) {
-                char buffer[4096];
-                ssize_t bytesRead = read(fd, buffer, sizeof(buffer));
-                if (bytesRead == -1) {
-                    // perror("read");
-                    // return -1;
+                struct stat file_stat;
+                if (stat(file_path, &file_stat) != 0) {
+                    perror("stat");
+                    closedir(directory);
+                    return 1;
                 }
-                
-                // Process the events in the buffer
-                // Each event is of type struct inotify_event
-                struct inotify_event* event;
-                struct stat fileStat;
-                for (char* ptr = buffer; ptr < buffer + bytesRead; ptr += sizeof(struct inotify_event) + event->len) {
-                    event = (struct inotify_event*)ptr;
 
-                    // Get the file type
-                    struct stat fileStat;
-                    if (lstat(event->name, &fileStat) == -1) {
-                        perror("lstat");
-                        continue;
-                    }
-
-                    // Check file type
-                    if (S_ISFIFO(fileStat.st_mode)) {
-
-                        socketData.file_type = 1;
-                        // write(client_sock, &socketData, sizeof(socketData));
-
-                    } else if (S_ISDIR(fileStat.st_mode)) {
-                        socketData.file_type = 2;
-
-
-                    } else if (S_ISREG(fileStat.st_mode)) {
-                        socketData.file_type = 3;
-                    
-                    
-                    
-                    }
-
-                    if (event->mask & IN_CREATE){
-                        
-                        socketData.status = 1;
-
-                        write(client_sock, "Bisiler oldu kral", sizeof("Bisiler oldu kral"));
-                        printf("Directory or file Created\n");
-
-
-
-                    }
-                    
-                    if (event->mask & IN_MODIFY)
-                        socketData.status = 2;
-
-                        printf("Directory or file Modified\n");
-
-                    if (event->mask & IN_DELETE)
-                        socketData.status = 3;
-
-                        printf("Directory or file Deleted\n"); 
-                    
-                    
-                    // You can access the event details like filename using event->name
-                }
+                printf("Initial timestamp of file %s: %ld\n", file_path, file_stat.st_mtime);
             }
 
 
