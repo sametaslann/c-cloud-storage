@@ -12,38 +12,67 @@
 #include <sys/socket.h>
 #include <dirent.h>
 #include <sys/stat.h>
-
+#include <fcntl.h>
+#include <semaphore.h>
 
 #include "common.c"
 
+enum Status{ADDED, DELETED, MODIFIED};
+enum FileType{T_DIR, T_REG, T_FIFO};
+
+
 
 #define MAX_PATH_LENGTH 1024
+#define BUFFER_SIZE 4096
+
 
 //Structs
 typedef struct {
     char filename[1024];
-    int file_type;
-    int status;
+    enum FileType file_type;
+    enum Status status;
     char content[4096];
+    int doneFlag;
 }SocketData;
 
 typedef struct {
     char filename[MAX_PATH_LENGTH];
     struct stat last_modified;
-    unsigned char file_type;
+    enum FileType file_type;
+
 } FileInfo;
 
-
+typedef struct {
+    char filename[1024];
+    enum FileType file_type;
+    enum Status status;
+    int fd;
+}LastFileChange;
 
 //Global Variables
 pthread_t* threadPool;
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t files_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+pthread_mutex_t que_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+pthread_mutex_t variable_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
+pthread_cond_t que_cond = PTHREAD_COND_INITIALIZER;
+
+
+
+sem_t semaphore;
+
+
 Queue *queue;
 char *dirname;
 int file_count = 0;
 FileInfo *files = NULL;
 Queue *queue;
+LastFileChange lastFileChange;
+int total_active_threads = 0;
 
 
 
@@ -133,9 +162,11 @@ int main(int argc, char *argv[]){
     }
     printf("[+] Bind to the port number: %d\n", port);
     
-    listen(server_sock, 5);
-    printf("Listening on port %d...\n", port);
+    listen(server_sock, threadPool_size);
 
+    sem_init(&semaphore, 0, 0); // Initialize semaphore with value 1
+
+    printf("Listening on port %d...\n", port);
 
     while (1)
     {
@@ -145,13 +176,24 @@ int main(int argc, char *argv[]){
         char *client_address = inet_ntoa(client_addr.sin_addr);
         printf("[+] Client connected | IP ADRESS: %s |\n",client_address);
     
-        pthread_mutex_lock(&mutex);
+        pthread_mutex_lock(&que_mutex);
+        ++total_active_threads;
         enqueue(queue, client_sock);
-        pthread_cond_signal(&cond);
-        pthread_mutex_unlock(&mutex);
+        pthread_cond_signal(&que_cond);
+        pthread_mutex_unlock(&que_mutex);
     
     }
     return 0;
+}
+
+
+void remove_parent_dir(char *str) {
+    size_t keywordLen = strlen(dirname)+1;
+    size_t strLen = strlen(str);
+
+    if (keywordLen <= strLen && strncmp(str, dirname, keywordLen-1) == 0) {
+        memmove(str, str + keywordLen, strLen - keywordLen + 1);
+    }
 }
 
 
@@ -188,12 +230,18 @@ void save_initial(const char *directory){
         // printf("%s\n", file_info.filename);
 
         stat(file_info.filename, &file_info.last_modified);
-        file_info.file_type = entry->d_type;
         files = (FileInfo *)realloc(files, (file_count + 1) * sizeof(FileInfo));
-        files[file_count++] = file_info;
 
         if (entry->d_type == DT_DIR)
-            save_initial(file_info.filename);
+            file_info.file_type = T_DIR;     
+        else
+            file_info.file_type = T_REG;
+        
+        files[file_count++] = file_info;
+        
+
+        if (entry->d_type == DT_DIR)
+            save_initial(file_info.filename);        
     }
 
     closedir(dir);
@@ -220,17 +268,9 @@ void added_new_file_check(const char* directory){
 
         int found = 0;
 
-            // printf("%s\n", entry->d_name);
 
-        if (entry->d_type == DT_DIR)
-        {
-            snprintf(fullpath, MAX_PATH_LENGTH, "%s/%s", directory, entry->d_name);
-            added_new_file_check(fullpath);   //Recursive call
-        }
-        
         for (i = 0; i < file_count; i++) {                    
             snprintf(fullpath, MAX_PATH_LENGTH, "%s/%s", directory, entry->d_name);
-            // printf("%s - %s \n", fullpath, files[i].filename);
             if (strcmp(fullpath, files[i].filename) == 0) {
                 found = 1;
                 break;
@@ -238,12 +278,47 @@ void added_new_file_check(const char* directory){
         }
 
         if (!found) {
+
             FileInfo file_info;
             snprintf(file_info.filename, MAX_PATH_LENGTH, "%s/%s", directory, entry->d_name);
+
+           
+
             stat(file_info.filename, &file_info.last_modified);
+
+            if (entry->d_type == DT_DIR)
+                file_info.file_type = T_DIR;
+            else
+                file_info.file_type = T_REG;
+
+            
+            pthread_mutex_lock(&files_mutex);
             files = (FileInfo *)realloc(files, (file_count + 1) * sizeof(FileInfo));
             files[file_count++] = file_info;
+            pthread_mutex_unlock(&files_mutex);
+
+
             printf("New file added: %s\n", file_info.filename);
+
+            pthread_mutex_lock(&mutex);
+
+            strcpy(lastFileChange.filename, file_info.filename);
+            lastFileChange.status = ADDED;
+            lastFileChange.file_type = file_info.file_type;
+
+            pthread_cond_broadcast(&cond);
+            pthread_mutex_unlock(&mutex);
+
+
+            //should wait here with semaphore
+            for (int i = 0; i < total_active_threads; i++)
+                sem_wait(&semaphore);
+            
+        }
+        if (entry->d_type == DT_DIR)
+        {
+            snprintf(fullpath, MAX_PATH_LENGTH, "%s/%s", directory, entry->d_name);
+            added_new_file_check(fullpath);   //Recursive call
         }
         
     }
@@ -269,8 +344,23 @@ void watch_changes(const char* directory){
     for (i = 0; i < file_count; i++) {
 
         if (is_file_modified(&files[i])) {
-            printf("File modified: %s\n", files[i].filename);
-            struct stat st;
+            //  printf("File modified: %s\n", files[i].filename);
+
+            
+            pthread_mutex_lock(&mutex);
+
+            strcpy(lastFileChange.filename, files[i].filename);
+            lastFileChange.status = MODIFIED;
+            lastFileChange.file_type = files[i].file_type;
+
+                        
+            pthread_cond_broadcast(&cond);
+            pthread_mutex_unlock(&mutex);
+
+
+            for (int i = 0; i < total_active_threads; i++)
+                sem_wait(&semaphore);
+
             stat(files[i].filename, &files[i].last_modified);
         }
     }
@@ -281,12 +371,33 @@ void watch_changes(const char* directory){
         if (access(files[i].filename, F_OK) != 0) {
             printf("File deleted: %s\n", files[i].filename);
 
+
+
+            pthread_mutex_lock(&mutex);
+
+            strcpy(lastFileChange.filename, files[i].filename);
+            lastFileChange.status = DELETED;
+            lastFileChange.file_type = files[i].file_type;
+            
+            pthread_cond_broadcast(&cond);
+            pthread_mutex_unlock(&mutex);
+
+
+            for (int i = 0; i < total_active_threads; i++)
+            {
+                sem_wait(&semaphore);
+            }
+
+            pthread_mutex_lock(&files_mutex);
+
             // Remove the deleted file from the list
             memmove(&files[i], &files[i + 1], (file_count - i - 1) * sizeof(FileInfo));
             file_count--;
             files = (FileInfo *)realloc(files, file_count * sizeof(FileInfo));
+            pthread_mutex_unlock(&files_mutex);
 
-            i--; // Adjust the index since we shifted the array
+            i--; // Adjust t
+
         }
     }
 
@@ -314,6 +425,89 @@ void *checker_thread_func(void *arg){
 
 }
 
+void equalize_new_client(int client_sock){
+
+    SocketData socketData;
+
+
+    pthread_mutex_lock(&files_mutex);
+    for (int i = 0; i < file_count; i++)
+    {
+        files[i].file_type;
+        
+
+        strcpy(socketData.filename,files[i].filename);  
+        socketData.file_type = files[i].file_type;
+        socketData.status = ADDED;
+        socketData.doneFlag = 0;
+
+        remove_parent_dir(socketData.filename);
+
+
+        if (files[i].file_type == T_DIR)
+        {
+            int sent_bytes = send(client_sock, &socketData, sizeof(SocketData), 0);
+
+            if (sent_bytes < 0){
+                    perror("Error sending data to socket");
+                    break;
+            }
+        }
+        else if (files[i].file_type == T_REG)
+        {
+
+            ssize_t read_bytes;
+            int fd = open(files[i].filename, O_RDONLY);
+            if (fd == -1)
+            {
+                perror("[-] Open");
+                exit(EXIT_FAILURE);
+            }
+
+            
+            int sent_bytes = send(client_sock, &socketData, sizeof(SocketData), 0);
+
+            if (sent_bytes < 0){
+                    perror("[-] Error sending data to socket");
+                    exit(EXIT_FAILURE);
+            }
+
+            
+            
+            socketData.status = MODIFIED;
+            while ((read_bytes = read(fd, socketData.content, BUFFER_SIZE) > 0)) {
+
+                if ((int)read_bytes == -1)
+                {
+                    printf("read bytes return %d\n", read_bytes); 
+                    break;
+                }
+
+                sent_bytes = send(client_sock, &socketData,  sizeof(SocketData), 0);
+                if (sent_bytes < 0){
+                    perror("Error sending data to socket");
+                    break;
+                }
+            }  
+
+            socketData.doneFlag = 1;
+
+            sent_bytes = send(client_sock, &socketData,  sizeof(SocketData), 0);
+            if (sent_bytes < 0){    
+                    perror("Error sending data to socket");
+                    exit(EXIT_FAILURE);
+            }
+
+            close(fd); 
+            
+        }
+    }
+    pthread_mutex_unlock(&files_mutex);
+
+    printf("All files equalized\n");
+
+}
+
 
 
 void* threadFunction(void *arg){
@@ -323,73 +517,189 @@ void* threadFunction(void *arg){
     int busy = 0;
     int num_bytes;
     SocketData socketData;
+
             
     while (1)
     {
-
         if (!busy) 
         {
             //Gets the sock fd of a client
-            pthread_mutex_lock(&mutex);
+            pthread_mutex_lock(&que_mutex);
 
             while (isEmpty(queue))
             {
-                pthread_cond_wait(&cond, &mutex);
+                pthread_cond_wait(&que_cond, &que_mutex);
             }
             
             client_sock = dequeue(queue);
+
+            equalize_new_client(client_sock);
             busy = 1;
-            pthread_mutex_unlock(&mutex);
+            pthread_mutex_unlock(&que_mutex);
 
         }
 
         else /*If thread is already working with a client communication*/
         { 
             
+            pthread_mutex_lock(&mutex);
+            pthread_cond_wait(&cond, &mutex);
+            pthread_mutex_unlock(&mutex);
 
-            
-                // Get the initial timestamps of all files in the directory
-            // struct dirent* entry;
-            // while ((entry = readdir(directory)) != NULL) {
-            //     if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
-            //         continue;
+            if (lastFileChange.status == ADDED)
+            {   
 
-            //     char file_path[256];
-            //     snprintf(file_path, sizeof(file_path), "%s/%s", directory_path, entry->d_name);
+                if (lastFileChange.file_type == T_DIR)
+                {
 
-            //     struct stat file_stat;
-            //     if (stat(file_path, &file_stat) != 0) {
-            //         perror("stat");
-            //         closedir(directory);
-            //         return 1;
-            //     }
+                    remove_parent_dir(lastFileChange.filename);
+                    socketData.status = ADDED;
+                    strcpy(socketData.filename,lastFileChange.filename);
+                    socketData.file_type = lastFileChange.file_type;
 
-            //     printf("Initial timestamp of file %s: %ld\n", file_path, file_stat.st_mtime);
-            // }
+                    int sent_bytes = send(client_sock, &socketData, sizeof(SocketData), 0);
+
+                    if (sent_bytes < 0){
+                            perror("Error sending data to socket");
+                            break;
+                    }
+                   
+                }
+                else if (lastFileChange.file_type == T_REG)
+                {
+
+                    // printf("New reg file addd\n");
+                    ssize_t read_bytes;
+
+                    int fd = open(lastFileChange.filename, O_RDONLY);
+                    if (fd == -1)
+                    {
+                        perror("[-] Open");
+                        exit(EXIT_FAILURE);
+                    }
 
 
+                    remove_parent_dir(lastFileChange.filename);
+                    socketData.status = ADDED;
+                    strcpy(socketData.filename,lastFileChange.filename);
+                    socketData.file_type = lastFileChange.file_type;
+                    // socketData.content = NULL;
 
-            // while ((num_bytes = read(client_sock, &socketData, sizeof(socketData))) > 0)
-            // {
+                    
+                    int sent_bytes = send(client_sock, &socketData, sizeof(SocketData), 0);
 
-            //     printf("Filename: %s -", socketData.filename);
-            //     printf("File Type: %d -", socketData.file_type);
-            //     printf("Content: %ld \n", strlen(socketData.content));
+                    if (sent_bytes < 0){
+                            perror("[-] Error sending data to socket");
+                            exit(EXIT_FAILURE);
+                    }
 
-            //     if (strlen(socketData.content) != 0) 
-            //     {
-            //         copy_file_content();
-            //         //TODO: COPY THE FILE CONTENT
-            //     }
-            //     else
-            //     {
-            //         create_file();
-            //         //TODO: CREATE THE GIVEN FILE
-            //     }
+                    
+                    
+                    socketData.status = MODIFIED;
+                    socketData.doneFlag = 0;
+                    while ((read_bytes = read(fd, socketData.content, BUFFER_SIZE) > 0)) {
+
+                        if ((int)read_bytes == -1 || read_bytes == 0)
+                        {
+                            printf("read bytes return %d\n", read_bytes); 
+                            break;
+
+                        }
+                        // printf("%d \n ", client_sock);
+                        sent_bytes = send(client_sock, &socketData,  sizeof(SocketData), 0);
+                        // printf("Content : %s \n ",socketData.content);
+
+                        if (sent_bytes < 0){
+                            perror("Error sending data to socket");
+                            break;
+                        }
+                    }  
+
+                    socketData.doneFlag = 1;
+
+                    sent_bytes = send(client_sock, &socketData,  sizeof(SocketData), 0);
+                    if (sent_bytes < 0){    
+                            perror("Error sending data to socket");
+                            exit(EXIT_FAILURE);
+                    }
+
+                    printf("doneflag gönderildi!\n");
+                    close(fd); 
+
+                }
                 
 
+                    
+            }
 
-            // }
+            else if (lastFileChange.status == DELETED)
+            {
+                printf("%s deleted\n", lastFileChange.filename);
+                remove_parent_dir(lastFileChange.filename);
+
+                socketData.status = DELETED;
+                strcpy(socketData.filename,lastFileChange.filename);
+                socketData.file_type = lastFileChange.file_type;
+
+                int sent_bytes = send(client_sock, &socketData, sizeof(SocketData), 0);
+
+                if (sent_bytes < 0){
+                    perror("Error sending data to socket");
+                    break;
+                }
+
+            }
+
+            else if (lastFileChange.status == MODIFIED && lastFileChange.file_type != T_DIR)
+            {
+
+
+                ssize_t read_bytes;
+
+                printf("%s MODIFIED\n", lastFileChange.filename);
+
+                int fd = open(lastFileChange.filename, O_RDONLY);
+                if (fd == -1)
+                {
+                    perror("[-] Open");
+                    exit(EXIT_FAILURE);
+                }
+
+
+                socketData.status = MODIFIED;
+                strcpy(socketData.filename,lastFileChange.filename);
+                socketData.file_type = lastFileChange.file_type;
+                remove_parent_dir(socketData.filename);
+                
+                socketData.doneFlag = 0;
+                while ((read_bytes = read(fd, socketData.content, BUFFER_SIZE) > 0)) {
+
+                    if ((int)read_bytes == -1 || read_bytes == 0)
+                    {
+                        printf("read bytes return %d\n", read_bytes); 
+                        break;
+
+                    }
+
+                    int sent_bytes = send(client_sock, &socketData, sizeof(SocketData), 0);
+                    if (sent_bytes < 0){
+                        perror("Error sending data to socket");
+                        break;
+                    }
+                }
+
+                socketData.doneFlag = 1; 
+                int sent_bytes = send(client_sock, &socketData, sizeof(SocketData), 0);
+
+                close(fd);
+
+                
+                
+            }
+            
+            sem_post(&semaphore);
+            
+
         }
         
     }
