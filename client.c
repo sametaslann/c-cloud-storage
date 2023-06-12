@@ -39,7 +39,9 @@ typedef struct {
     char filename[PATH_LENGTH];
     struct stat last_modified;
     enum FileType file_type;
+    enum Status status;
 } FileInfo;
+
 
 
 
@@ -58,8 +60,10 @@ pthread_cond_t que_cond = PTHREAD_COND_INITIALIZER;
 FileInfo *files = NULL;
 char dirname[PATH_LENGTH];
 int file_count = 0;
-sem_t semaphore;
+sem_t watcher_sem;
+sem_t sender_sem;
 
+int lastChangeIndex;
 
 void receive_from_server(int socket);
 void watch_changes(const char* directory);
@@ -114,7 +118,8 @@ int main(int argc, char *argv[]){
     }
     
 
-    sem_init(&semaphore, 0, 0); // Initialize semaphore with value 1
+    sem_init(&watcher_sem, 0, 0); // Initialize watcher_sem with value 1
+    sem_init(&sender_sem, 0, 0); // Initialize watcher_sem with value 1
     
   
     receive_from_server(sock);
@@ -126,7 +131,7 @@ int main(int argc, char *argv[]){
 
 void* dir_watcher_thread_func(void* arg){
 
-    sem_wait(&semaphore);
+    sem_wait(&watcher_sem);
     
     while (1)
     {
@@ -139,58 +144,18 @@ void* dir_watcher_thread_func(void* arg){
 void watch_changes(const char* directory){
 
 
-
-    int i;
-    
-    
-    for (i = 0; i < file_count; i++) {
-
-        if (is_file_modified(&files[i])) {
-
-            printf("File modified: %s\n", files[i].filename);
-            
-            // pthread_mutex_lock(&mutex);
-
-            // strcpy(lastFileChange.filename, files[i].filename);
-            // lastFileChange.status = MODIFIED;
-            // lastFileChange.file_type = files[i].file_type;
-
-                        
-            // pthread_cond_broadcast(&cond);
-            // pthread_mutex_unlock(&mutex);
+    for (int i = 0; i < file_count; i++) {
 
 
-            // for (int i = 0; i < total_active_threads; i++)
-            //     sem_wait(&semaphore);
-
-            // stat(files[i].filename, &files[i].last_modified);
-        }
-    }
-
-    //Check for new files
-    // Check for deleted files
-    for (i = 0; i < file_count; i++) {
         if (access(files[i].filename, F_OK) != 0) {
-            printf("File deleted: %s\n", files[i].filename);
 
+            pthread_mutex_lock(&mutex);
+            files[i].status = DELETED;
+            lastChangeIndex = i;
+            pthread_cond_signal(&cond);
+            pthread_mutex_unlock(&mutex);
 
-
-            // pthread_mutex_lock(&mutex);
-
-            // strcpy(lastFileChange.filename, files[i].filename);
-            // lastFileChange.status = DELETED;
-            // lastFileChange.file_type = files[i].file_type;
-            
-            // pthread_cond_broadcast(&cond);
-            // pthread_mutex_unlock(&mutex);
-
-
-            // for (int i = 0; i < total_active_threads; i++)
-            // {
-            //     sem_wait(&semaphore);
-            // }
-
-            // pthread_mutex_lock(&files_mutex);
+            sem_wait(&sender_sem);
 
             // Remove the deleted file from the list
             memmove(&files[i], &files[i + 1], (file_count - i - 1) * sizeof(FileInfo));
@@ -198,9 +163,26 @@ void watch_changes(const char* directory){
             files = (FileInfo *)realloc(files, file_count * sizeof(FileInfo));
             pthread_mutex_unlock(&files_mutex);
 
-            i--; // Adjust t
+            i--; 
 
         }
+
+        else if (is_file_modified(&files[i])) {
+            
+            if (files[i].file_type != T_DIR)
+            {
+            
+                pthread_mutex_lock(&mutex);
+                files[i].status = MODIFIED;
+                lastChangeIndex = i;
+                pthread_cond_signal(&cond);
+                pthread_mutex_unlock(&mutex);
+                sem_wait(&sender_sem);
+            }
+            
+        }
+
+        
     }
 
 
@@ -251,42 +233,32 @@ void added_new_file_check(const char* directory){
 
         if (!found) {
 
-            printf("%s added\n", entry->d_name);
+            FileInfo file_info;
+            snprintf(file_info.filename, PATH_LENGTH, "%s/%s", directory, entry->d_name);
+            file_info.status = ADDED;
 
-            // FileInfo file_info;
-            // snprintf(file_info.filename, PATH_LENGTH, "%s/%s", directory, entry->d_name);
+            stat(file_info.filename, &file_info.last_modified);
 
-           
-
-            // stat(file_info.filename, &file_info.last_modified);
-
-            // if (entry->d_type == DT_DIR)
-            //     file_info.file_type = T_DIR;
-            // else
-            //     file_info.file_type = T_REG;
+            if (entry->d_type == DT_DIR)
+                file_info.file_type = T_DIR;
+            else
+                file_info.file_type = T_REG;
 
             
-            // pthread_mutex_lock(&files_mutex);
-            // files = (FileInfo *)realloc(files, (file_count + 1) * sizeof(FileInfo));
-            // files[file_count++] = file_info;
-            // pthread_mutex_unlock(&files_mutex);
+            files = (FileInfo *)realloc(files, (file_count + 1) * sizeof(FileInfo));
+            files[file_count++] = file_info;
 
 
-            // printf("New file added: %s\n", file_info.filename);
+            pthread_mutex_lock(&mutex);
 
-            // pthread_mutex_lock(&mutex);
+            files[file_count-1].status = ADDED;
+            lastChangeIndex = file_count-1;
 
-            // strcpy(lastFileChange.filename, file_info.filename);
-            // lastFileChange.status = ADDED;
-            // lastFileChange.file_type = file_info.file_type;
-
-            // pthread_cond_broadcast(&cond);
-            // pthread_mutex_unlock(&mutex);
+            pthread_cond_signal(&cond);
+            pthread_mutex_unlock(&mutex);
 
 
-            // //should wait here with semaphore
-            // for (int i = 0; i < total_active_threads; i++)
-            //     sem_wait(&semaphore);
+            sem_wait(&sender_sem);
             
         }
         if (entry->d_type == DT_DIR)
@@ -296,7 +268,6 @@ void added_new_file_check(const char* directory){
         }
         
     }
-
 
     closedir(dir);
 }
@@ -309,8 +280,44 @@ void *send_to_server(void *arg){
     SocketData socketData;
     int socket = *(int *)arg;
 
+    while (1)
+    {
+        pthread_mutex_lock(&mutex);
+        pthread_cond_wait(&cond, &mutex);
+        pthread_mutex_unlock(&mutex);
+
+        memset(socketData.content, 0, BUFFER_SIZE);
+
+
+        strcpy(socketData.filename,files[lastChangeIndex].filename);
+        socketData.status = files[lastChangeIndex].status;
+        socketData.file_type = files[lastChangeIndex].file_type;
+
+        if (files[lastChangeIndex].status == ADDED)
+        {
+
+            printf("%s ADDED\n", files[lastChangeIndex].filename);
+        }
+        
+        else if (files[lastChangeIndex].status == DELETED)
+        {
+            printf("%s DELETED\n", files[lastChangeIndex].filename);
+
+        }
+        else if (files[lastChangeIndex].status == MODIFIED)
+        {
+            printf("%s MODIFIED\n", files[lastChangeIndex].filename);
+
+        }
+
+        send(socket, &socketData,  sizeof(SocketData), 0);
+
+
+        sem_post(&sender_sem);
+    }
+    
+
     socketData.doneFlag = 10;
-    send(socket, &socketData,  sizeof(SocketData), 0);
 
 }
 
@@ -439,7 +446,7 @@ void receive_from_server(int socket){
                 fprintf(stderr, "Failed to create thread.\n");
                 exit(1);
             }
-            sem_post(&semaphore);
+            sem_post(&watcher_sem);
 
         }
     }

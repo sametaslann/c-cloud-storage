@@ -22,7 +22,7 @@ enum FileType{T_DIR, T_REG, T_FIFO};
 
 
 
-#define MAX_PATH_LENGTH 1024
+#define PATH_LENGTH 1024
 #define BUFFER_SIZE 4096
 
 
@@ -36,7 +36,7 @@ typedef struct {
 }SocketData;
 
 typedef struct {
-    char filename[MAX_PATH_LENGTH];
+    char filename[PATH_LENGTH];
     struct stat last_modified;
     enum FileType file_type;
 
@@ -226,7 +226,7 @@ void save_initial(const char *directory){
             continue;
 
         FileInfo file_info;
-        snprintf(file_info.filename, MAX_PATH_LENGTH, "%s/%s", directory, entry->d_name);
+        snprintf(file_info.filename, PATH_LENGTH, "%s/%s", directory, entry->d_name);
         // printf("%s\n", file_info.filename);
 
         stat(file_info.filename, &file_info.last_modified);
@@ -271,7 +271,7 @@ void added_new_file_check(const char* directory){
 
 
         for (i = 0; i < file_count; i++) {                    
-            snprintf(fullpath, MAX_PATH_LENGTH, "%s/%s", directory, entry->d_name);
+            snprintf(fullpath, PATH_LENGTH, "%s/%s", directory, entry->d_name);
             if (strcmp(fullpath, files[i].filename) == 0) {
                 found = 1;
                 break;
@@ -281,7 +281,7 @@ void added_new_file_check(const char* directory){
         if (!found) {
 
             FileInfo file_info;
-            snprintf(file_info.filename, MAX_PATH_LENGTH, "%s/%s", directory, entry->d_name);
+            snprintf(file_info.filename, PATH_LENGTH, "%s/%s", directory, entry->d_name);
 
            
 
@@ -318,7 +318,7 @@ void added_new_file_check(const char* directory){
         }
         if (entry->d_type == DT_DIR)
         {
-            snprintf(fullpath, MAX_PATH_LENGTH, "%s/%s", directory, entry->d_name);
+            snprintf(fullpath, PATH_LENGTH, "%s/%s", directory, entry->d_name);
             added_new_file_check(fullpath);   //Recursive call
         }
         
@@ -519,7 +519,7 @@ void* receiverThreadFunction(void *arg){
     
     while ((received_bytes = recv(client_sock, &socketData, sizeof(SocketData), 0)) > 0)
     {
-        printf("Clienttan bişiler okudum la %d\n", socketData.doneFlag);
+        printf("Clienttan bişiler okudum la %s\n", socketData.filename);
 
     }
     return NULL;
