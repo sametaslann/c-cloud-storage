@@ -10,42 +10,75 @@
 #include <arpa/inet.h>
 #include <dirent.h>
 #include <fcntl.h>
-
-
+#include <sys/stat.h>
 #include <sys/socket.h>
+#include <semaphore.h>
+
 
 #define BUFFER_SIZE 4096
+#define PATH_LENGTH 1024
+
 
 enum FileType{T_DIR, T_REG, T_FIFO};
 
-enum Status{ADDED, DELETED, MODIFIED};
+enum Status{ADDED, DELETED, MODIFIED, FINISH_EQUALIZE};
+
+
+
 
 typedef struct {
-    char filename[1024];
+    char filename[PATH_LENGTH];
     enum FileType file_type;
     enum Status status;
-    char content[4096];
+    char content[BUFFER_SIZE];
     int doneFlag;
 }SocketData;
 
 
-char dirname[1024];
+typedef struct {
+    char filename[PATH_LENGTH];
+    struct stat last_modified;
+    enum FileType file_type;
+} FileInfo;
 
-void send_directory_content(int socket);
+
+
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t files_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+pthread_mutex_t que_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+pthread_mutex_t variable_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
+pthread_cond_t que_cond = PTHREAD_COND_INITIALIZER;
+
+
+
+FileInfo *files = NULL;
+char dirname[PATH_LENGTH];
+int file_count = 0;
+sem_t semaphore;
+
+
+void receive_from_server(int socket);
+void watch_changes(const char* directory);
+void added_new_file_check(const char* directory);
+void* dir_watcher_thread_func(void *arg);
+
+
 
 int main(int argc, char *argv[]){
 
     int sock;
     struct sockaddr_in addr;
-    socklen_t addr_size;
-    char buffer[1024];
-    int n;
+    pthread_t dir_watcher_thread;
 
 
     if (argc < 3 || argc > 4)
     {
         printf("Usage: %s directory portnumber serverIP(optionally)\n", argv[0]);
-        return 1;
+        return -1;
     }
 
     char *ip = "127.0.0.1";
@@ -72,57 +105,258 @@ int main(int argc, char *argv[]){
         perror("[-] Connection Error");
         exit(1);
     }
-    else{
+    else
         printf("Connected Established. \n");
 
+    if (pthread_create(&dir_watcher_thread, NULL, dir_watcher_thread_func, NULL) != 0) {
+        fprintf(stderr, "Failed to create thread.\n");
+        exit(1);
     }
+    
 
-
-
-    send_directory_content(sock);
+    sem_init(&semaphore, 0, 0); // Initialize semaphore with value 1
+    
+  
+    receive_from_server(sock);
+    // watch_changes();
 
     close(sock);
     return 0;
 }
 
+void* dir_watcher_thread_func(void* arg){
 
-void send_directory_content(int socket){
+    sem_wait(&semaphore);
+    
+    while (1)
+    {
+        watch_changes(dirname);
+    }
+    
 
-    // DIR *dir;
+}
+
+void watch_changes(const char* directory){
+
+
+
+    int i;
+    
+    
+    for (i = 0; i < file_count; i++) {
+
+        if (is_file_modified(&files[i])) {
+
+            printf("File modified: %s\n", files[i].filename);
+            
+            // pthread_mutex_lock(&mutex);
+
+            // strcpy(lastFileChange.filename, files[i].filename);
+            // lastFileChange.status = MODIFIED;
+            // lastFileChange.file_type = files[i].file_type;
+
+                        
+            // pthread_cond_broadcast(&cond);
+            // pthread_mutex_unlock(&mutex);
+
+
+            // for (int i = 0; i < total_active_threads; i++)
+            //     sem_wait(&semaphore);
+
+            // stat(files[i].filename, &files[i].last_modified);
+        }
+    }
+
+    //Check for new files
+    // Check for deleted files
+    for (i = 0; i < file_count; i++) {
+        if (access(files[i].filename, F_OK) != 0) {
+            printf("File deleted: %s\n", files[i].filename);
+
+
+
+            // pthread_mutex_lock(&mutex);
+
+            // strcpy(lastFileChange.filename, files[i].filename);
+            // lastFileChange.status = DELETED;
+            // lastFileChange.file_type = files[i].file_type;
+            
+            // pthread_cond_broadcast(&cond);
+            // pthread_mutex_unlock(&mutex);
+
+
+            // for (int i = 0; i < total_active_threads; i++)
+            // {
+            //     sem_wait(&semaphore);
+            // }
+
+            // pthread_mutex_lock(&files_mutex);
+
+            // Remove the deleted file from the list
+            memmove(&files[i], &files[i + 1], (file_count - i - 1) * sizeof(FileInfo));
+            file_count--;
+            files = (FileInfo *)realloc(files, file_count * sizeof(FileInfo));
+            pthread_mutex_unlock(&files_mutex);
+
+            i--; // Adjust t
+
+        }
+    }
+
+
+    added_new_file_check(directory);
+    sleep(1); // Sleep for 1 second before checking again
+
+}
+
+int is_file_modified(const FileInfo *file_info) {
+    struct stat st;
+    if (stat(file_info->filename, &st) != 0) {
+        //perror("[-] Stat");
+        return 0;
+    }
+
+    return ((st.st_mtime == file_info->last_modified.st_mtime) ? 0 : 1);
+}
+
+void added_new_file_check(const char* directory){
+
+
+    int i;
     struct dirent *entry;
+    DIR *dir;
+    
+    dir = opendir(directory);
+    if (dir == NULL) {
+        perror("opendir");
+        return;
+    }
+
+    char fullpath[1024];
+
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) 
+            continue;
+
+        int found = 0;
+
+
+        for (i = 0; i < file_count; i++) {                    
+            snprintf(fullpath, PATH_LENGTH, "%s/%s", directory, entry->d_name);
+            if (strcmp(fullpath, files[i].filename) == 0) {
+                found = 1;
+                break;
+            }
+        }
+
+        if (!found) {
+
+            printf("%s added\n", entry->d_name);
+
+            // FileInfo file_info;
+            // snprintf(file_info.filename, PATH_LENGTH, "%s/%s", directory, entry->d_name);
+
+           
+
+            // stat(file_info.filename, &file_info.last_modified);
+
+            // if (entry->d_type == DT_DIR)
+            //     file_info.file_type = T_DIR;
+            // else
+            //     file_info.file_type = T_REG;
+
+            
+            // pthread_mutex_lock(&files_mutex);
+            // files = (FileInfo *)realloc(files, (file_count + 1) * sizeof(FileInfo));
+            // files[file_count++] = file_info;
+            // pthread_mutex_unlock(&files_mutex);
+
+
+            // printf("New file added: %s\n", file_info.filename);
+
+            // pthread_mutex_lock(&mutex);
+
+            // strcpy(lastFileChange.filename, file_info.filename);
+            // lastFileChange.status = ADDED;
+            // lastFileChange.file_type = file_info.file_type;
+
+            // pthread_cond_broadcast(&cond);
+            // pthread_mutex_unlock(&mutex);
+
+
+            // //should wait here with semaphore
+            // for (int i = 0; i < total_active_threads; i++)
+            //     sem_wait(&semaphore);
+            
+        }
+        if (entry->d_type == DT_DIR)
+        {
+            snprintf(fullpath, PATH_LENGTH, "%s/%s", directory, entry->d_name);
+            added_new_file_check(fullpath);   //Recursive call
+        }
+        
+    }
+
+
+    closedir(dir);
+}
+
+
+
+
+void *send_to_server(void *arg){
+
     SocketData socketData;
-    char buffer[BUFFER_SIZE];
-    // dir = opendir(dirname);
-    // if (dir == NULL)
-    // {
-    //     perror("[-] Opendir Error");
-    //     return;
-    // }
+    int socket = *(int *)arg;
 
-    chdir(dirname);
+    socketData.doneFlag = 10;
+    send(socket, &socketData,  sizeof(SocketData), 0);
 
+}
 
-    // read(socket, buffer, sizeof(buffer));
-    // printf("%s",buffer);
+void set_new_timestamp(char *filename){
 
 
+    for (size_t i = 0; i < file_count; i++)
+        if (strcmp(filename, files[i].filename) == 0)
+            stat(filename, &files[i].last_modified);            
+
+}
+
+
+
+void receive_from_server(int socket){
+
+    SocketData socketData;
+    pthread_t sender_thread;
+    int equalize_finished = 0;
+    char fullpath[PATH_LENGTH*2];
+    mkdir(dirname, 0777);
+    
 
     ssize_t received_bytes;
     while ((received_bytes = recv(socket, &socketData, sizeof(SocketData), 0)) > 0) {
 
-        printf("%s -- \n", socketData.filename);
-
+        // printf("%s -- \n", socketData.filename);
+        
+        snprintf(fullpath, PATH_LENGTH*2, "%s/%s", dirname, socketData.filename);
         if(socketData.status == ADDED){
 
-            if (socketData.file_type == T_DIR)
-                mkdir(socketData.filename);
+            
+            files = (FileInfo *)realloc(files, (file_count + 1) * sizeof(FileInfo));
+            strcpy(files[file_count].filename, fullpath);
+            files[file_count].file_type = socketData.file_type;
+            stat(files[file_count].filename, &files[file_count].last_modified);
+            
 
-
+            if (socketData.file_type == T_DIR){
+                mkdir(fullpath, 0777);
+            }
 
             else if (socketData.file_type == T_REG)
             {
                 printf("Regular file ADDED\n");
-                int fd = open(socketData.filename, O_CREAT, 0777);
+                int fd = open(fullpath, O_CREAT, 0777);
 
                 if (fd == -1)
                 {
@@ -132,27 +366,25 @@ void send_directory_content(int socket){
                 close(fd);    
             }
 
-            
+            file_count++;    
         }
 
         else if(socketData.status == DELETED){
 
             if (socketData.file_type == T_DIR){
 
-                if (rmdir(socketData.filename) == 0) 
+                if (rmdir(fullpath) == 0) 
                     printf("directory deleted successfully.\n");
                 else 
                     printf("Unable to delete the directory.\n");
-
             }
 
             else                        
             {
-                if (remove(socketData.filename) == 0) 
+                if (remove(fullpath) == 0) 
                     printf("File deleted successfully.\n");
                 else 
                     printf("Unable to delete the file.\n");
-
 
             }
             
@@ -162,18 +394,14 @@ void send_directory_content(int socket){
 
             printf("MODIFIED\n");
 
+            int fd = open(fullpath, O_WRONLY | O_TRUNC , 0777);
             
-            int fd = open(socketData.filename, O_WRONLY | O_TRUNC , 0777);
-
-            
-            if (fd == -1)
-            {
+            if (fd == -1){
                 perror("[-] Open");
                 exit(EXIT_FAILURE);
             }
 
-            if (strlen(socketData.content))
-            {
+            if (strlen(socketData.content)){
                 printf("Content var\n");
                 if(write(fd, socketData.content, strlen(socketData.content)) == -1){
                     perror("[-] Write");
@@ -183,8 +411,6 @@ void send_directory_content(int socket){
             
 
             while (!socketData.doneFlag && (received_bytes = recv(socket, &socketData, sizeof(SocketData), 0)) > 0) {
-                printf("Doneflag: %d\n", socketData.doneFlag);
-                // printf("Received data: %s", socketData.content);
                 if (socketData.doneFlag){
                     break;
                 }
@@ -195,33 +421,32 @@ void send_directory_content(int socket){
                 }                
             }
             printf("close\n");
-
             close(fd);                    
+
+            set_new_timestamp(fullpath);
+
+        }
+
+        else if(socketData.status == FINISH_EQUALIZE){
+
+
+
+            printf("FINISH_EQUALIZE\n");
+
+            equalize_finished = 1;
+
+            if (pthread_create(&sender_thread, NULL, send_to_server, (void *)&socket) != 0) {
+                fprintf(stderr, "Failed to create thread.\n");
+                exit(1);
+            }
+            sem_post(&semaphore);
+
         }
     }
 
-
-
-
-    //  while ((entry = readdir(dir)) != NULL) {
-
-    //     if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
-
-    //         strcpy(socketData.filename, entry->d_name);
-    //         socketData.file_type = entry->d_type;
-
-    //         write(socket, &socketData, sizeof(socketData));
-
-    //         // send(socket, entry->d_name, strlen(entry->d_name), 0);
-
-    //         // send(socket, "\n", 1, 0);
-    //     }
-
-
-    // }
-
-    // closedir(dir);
-    
-    
+    if (pthread_join(sender_thread, NULL) != 0) {
+        fprintf(stderr, "Failed to join thread.\n");
+        exit(1);
+    }
 
 }

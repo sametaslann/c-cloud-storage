@@ -17,7 +17,7 @@
 
 #include "common.c"
 
-enum Status{ADDED, DELETED, MODIFIED};
+enum Status{ADDED, DELETED, MODIFIED, FINISH_EQUALIZE};
 enum FileType{T_DIR, T_REG, T_FIFO};
 
 
@@ -77,7 +77,7 @@ int total_active_threads = 0;
 
 
 
-void* threadFunction(void *arg);
+void* senderThreadFunction(void *arg);
 void* checker_thread_func(void *arg);
 int is_file_modified(const FileInfo *file_info);
 void save_initial(const char *directory);
@@ -122,7 +122,7 @@ int main(int argc, char *argv[]){
     pthread_t checkerThread;  
     threadPool = (pthread_t*)malloc(threadPool_size * sizeof(pthread_t));
 
-    if (pthread_create(threadPool, NULL, checker_thread_func , NULL) !=0 )
+    if (pthread_create(&checkerThread, NULL, checker_thread_func , NULL) !=0 )
     {
             perror("[-] Create thread ");
             free(threadPool);
@@ -131,7 +131,7 @@ int main(int argc, char *argv[]){
     
     for (size_t i = 0; i < threadPool_size; i++)
     {
-        if (pthread_create(&threadPool[i], NULL, threadFunction , NULL) !=0 )
+        if (pthread_create(&threadPool[i], NULL, senderThreadFunction , NULL) !=0 )
         {
             perror("[-] Create thread ");
             free(threadPool);
@@ -200,7 +200,7 @@ void remove_parent_dir(char *str) {
 int is_file_modified(const FileInfo *file_info) {
     struct stat st;
     if (stat(file_info->filename, &st) != 0) {
-        perror("stat");
+        //perror("[-] Stat");
         return 0;
     }
 
@@ -247,6 +247,7 @@ void save_initial(const char *directory){
     closedir(dir);
 
 }
+
 void added_new_file_check(const char* directory){
 
 
@@ -332,7 +333,6 @@ void added_new_file_check(const char* directory){
 void watch_changes(const char* directory){
 
     int i;
-    struct dirent *entry;
     DIR *dir;
     
     dir = opendir(directory);
@@ -344,7 +344,6 @@ void watch_changes(const char* directory){
     for (i = 0; i < file_count; i++) {
 
         if (is_file_modified(&files[i])) {
-            //  printf("File modified: %s\n", files[i].filename);
 
             
             pthread_mutex_lock(&mutex);
@@ -420,9 +419,7 @@ void *checker_thread_func(void *arg){
     while (1) {
         watch_changes(directory);        
     }
-
     free(files);
-
 }
 
 void equalize_new_client(int client_sock){
@@ -433,9 +430,7 @@ void equalize_new_client(int client_sock){
     pthread_mutex_lock(&files_mutex);
     for (int i = 0; i < file_count; i++)
     {
-        files[i].file_type;
         
-
         strcpy(socketData.filename,files[i].filename);  
         socketData.file_type = files[i].file_type;
         socketData.status = ADDED;
@@ -478,14 +473,11 @@ void equalize_new_client(int client_sock){
             while ((read_bytes = read(fd, socketData.content, BUFFER_SIZE) > 0)) {
 
                 if ((int)read_bytes == -1)
-                {
-                    printf("read bytes return %d\n", read_bytes); 
                     break;
-                }
 
                 sent_bytes = send(client_sock, &socketData,  sizeof(SocketData), 0);
                 if (sent_bytes < 0){
-                    perror("Error sending data to socket");
+                    perror("[-]Error sending data to socket");
                     break;
                 }
             }  
@@ -504,21 +496,44 @@ void equalize_new_client(int client_sock){
     }
     pthread_mutex_unlock(&files_mutex);
 
+    socketData.status = FINISH_EQUALIZE;
+
+    int sent_bytes = send(client_sock, &socketData,  sizeof(SocketData), 0);
+    if (sent_bytes < 0){    
+            perror("Error sending data to socket");
+            exit(EXIT_FAILURE);
+    }
+
+
+
     printf("All files equalized\n");
 
 }
 
 
+void* receiverThreadFunction(void *arg){
+    
+    int client_sock = *(int *)arg;
+    SocketData socketData;
+    ssize_t received_bytes;
+    
+    while ((received_bytes = recv(client_sock, &socketData, sizeof(SocketData), 0)) > 0)
+    {
+        printf("Clienttan bişiler okudum la %d\n", socketData.doneFlag);
 
-void* threadFunction(void *arg){
+    }
+    return NULL;
+}
 
-    char buffer[1024];
+
+void* senderThreadFunction(void *arg){
+
     int client_sock = 0; 
     int busy = 0;
-    int num_bytes;
     SocketData socketData;
+    pthread_t receiver_thread;
 
-            
+
     while (1)
     {
         if (!busy) 
@@ -530,10 +545,15 @@ void* threadFunction(void *arg){
             {
                 pthread_cond_wait(&que_cond, &que_mutex);
             }
-            
             client_sock = dequeue(queue);
 
             equalize_new_client(client_sock);
+
+            if (pthread_create(&receiver_thread, NULL, receiverThreadFunction, (void *)&client_sock) != 0) {
+                fprintf(stderr, "Failed to create thread.\n");
+                exit(1);
+            }
+
             busy = 1;
             pthread_mutex_unlock(&que_mutex);
 
@@ -545,6 +565,10 @@ void* threadFunction(void *arg){
             pthread_mutex_lock(&mutex);
             pthread_cond_wait(&cond, &mutex);
             pthread_mutex_unlock(&mutex);
+
+
+            memset(socketData.content, 0, BUFFER_SIZE);
+
 
             if (lastFileChange.status == ADDED)
             {   
@@ -599,15 +623,10 @@ void* threadFunction(void *arg){
                     socketData.doneFlag = 0;
                     while ((read_bytes = read(fd, socketData.content, BUFFER_SIZE) > 0)) {
 
-                        if ((int)read_bytes == -1 || read_bytes == 0)
-                        {
-                            printf("read bytes return %d\n", read_bytes); 
+                        if ((int)read_bytes == -1)
                             break;
 
-                        }
-                        // printf("%d \n ", client_sock);
                         sent_bytes = send(client_sock, &socketData,  sizeof(SocketData), 0);
-                        // printf("Content : %s \n ",socketData.content);
 
                         if (sent_bytes < 0){
                             perror("Error sending data to socket");
@@ -674,12 +693,9 @@ void* threadFunction(void *arg){
                 socketData.doneFlag = 0;
                 while ((read_bytes = read(fd, socketData.content, BUFFER_SIZE) > 0)) {
 
-                    if ((int)read_bytes == -1 || read_bytes == 0)
-                    {
-                        printf("read bytes return %d\n", read_bytes); 
+                    if ((int)read_bytes == -1)
                         break;
 
-                    }
 
                     int sent_bytes = send(client_sock, &socketData, sizeof(SocketData), 0);
                     if (sent_bytes < 0){
@@ -691,6 +707,10 @@ void* threadFunction(void *arg){
                 socketData.doneFlag = 1; 
                 int sent_bytes = send(client_sock, &socketData, sizeof(SocketData), 0);
 
+                if (sent_bytes < 0){
+                    perror("[-]Error sending data to socket");
+                }
+
                 close(fd);
 
                 
@@ -699,9 +719,16 @@ void* threadFunction(void *arg){
             
             sem_post(&semaphore);
             
-
         }
         
+        
     }
+
+    if (pthread_join(receiver_thread, NULL) != 0) {
+        fprintf(stderr, "Failed to join thread.\n");
+        exit(1);
+    }
+
+    return NULL;
 
 }
