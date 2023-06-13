@@ -83,6 +83,7 @@ int is_file_modified(const FileInfo *file_info);
 void save_initial(const char *directory);
 void added_new_file_check(const char* directory);
 void watch_changes(const char* directory);
+void set_new_timestamp(char *filename);
 
 int main(int argc, char *argv[]){
 
@@ -340,6 +341,9 @@ void watch_changes(const char* directory){
         perror("opendir");
         return;
     }
+
+    added_new_file_check(directory);
+
     
     for (i = 0; i < file_count; i++) {
 
@@ -367,6 +371,7 @@ void watch_changes(const char* directory){
     //Check for new files
     // Check for deleted files
     for (i = 0; i < file_count; i++) {
+
         if (access(files[i].filename, F_OK) != 0) {
             printf("File deleted: %s\n", files[i].filename);
 
@@ -402,7 +407,6 @@ void watch_changes(const char* directory){
 
     closedir(dir);
 
-    added_new_file_check(directory);
     sleep(1); // Sleep for 1 second before checking again
 
 
@@ -516,13 +520,81 @@ void* receiverThreadFunction(void *arg){
     int client_sock = *(int *)arg;
     SocketData socketData;
     ssize_t received_bytes;
+    char fullpath[PATH_LENGTH*2];
+
     
     while ((received_bytes = recv(client_sock, &socketData, sizeof(SocketData), 0)) > 0)
     {
-        printf("Clienttan bişiler okudum la %s\n", socketData.filename);
 
+        snprintf(fullpath, PATH_LENGTH*2, "%s/%s", dirname, socketData.filename);
+
+        if (socketData.status == ADDED)
+        {
+
+            if (socketData.file_type == T_DIR){
+                mkdir(fullpath, 0777);
+            }
+
+            else if (socketData.file_type == T_REG)
+            {
+                printf("Regular file ADDED\n");
+                int fd = open(fullpath, O_CREAT, 0777);
+
+                if (fd == -1)
+                {
+                    perror("[-] Open");
+                    exit(EXIT_FAILURE);
+                }
+                close(fd);    
+            }
+        }
+        if (socketData.status == DELETED)
+        {
+
+
+        }
+        if (socketData.status == MODIFIED)
+        {
+            int fd = open(fullpath, O_WRONLY | O_TRUNC , 0777);
+
+            if (fd == -1){
+                perror("[-] Open");
+                exit(EXIT_FAILURE);
+            }
+
+            if (strlen(socketData.content)){
+                printf("Content var\n");
+                if(write(fd, socketData.content, strlen(socketData.content)) == -1){
+                    perror("[-] Write");
+                    break;
+                }
+            }
+
+
+            while (!socketData.doneFlag && (received_bytes = recv(client_sock, &socketData, sizeof(SocketData), 0)) > 0) {
+                if (socketData.doneFlag){
+                    break;
+                }
+
+                else if(write(fd, socketData.content, strlen(socketData.content)) == -1){
+                    perror("[-] Write");
+                    break;
+                }                
+            }
+            printf("close\n");
+            // set_new_timestamp(fullpath);
+        }
+        memset(socketData.content, 0, BUFFER_SIZE);
     }
     return NULL;
+}
+
+void set_new_timestamp(char *filename){
+
+    for (size_t i = 0; i < file_count; i++)
+        if (strcmp(filename, files[i].filename) == 0)
+            stat(filename, &files[i].last_modified);            
+
 }
 
 
@@ -718,7 +790,7 @@ void* senderThreadFunction(void *arg){
             }
             
             sem_post(&semaphore);
-            
+            printf("SEM_POST\n");
         }
         
         

@@ -69,6 +69,8 @@ void receive_from_server(int socket);
 void watch_changes(const char* directory);
 void added_new_file_check(const char* directory);
 void* dir_watcher_thread_func(void *arg);
+void remove_parent_dir(char *str);
+int is_file_modified(const FileInfo *file_info);
 
 
 
@@ -171,13 +173,17 @@ void watch_changes(const char* directory){
             
             if (files[i].file_type != T_DIR)
             {
+                printf("%s file - %d timestamp\n",files[i].filename, files[i].last_modified.st_mtime);
             
                 pthread_mutex_lock(&mutex);
                 files[i].status = MODIFIED;
                 lastChangeIndex = i;
                 pthread_cond_signal(&cond);
                 pthread_mutex_unlock(&mutex);
+
                 sem_wait(&sender_sem);
+                stat(files[i].filename, &files[i].last_modified);
+
             }
             
         }
@@ -189,6 +195,15 @@ void watch_changes(const char* directory){
     added_new_file_check(directory);
     sleep(1); // Sleep for 1 second before checking again
 
+}
+
+void remove_parent_dir(char *str) {
+    size_t keywordLen = strlen(dirname)+1;
+    size_t strLen = strlen(str);
+
+    if (keywordLen <= strLen && strncmp(str, dirname, keywordLen-1) == 0) {
+        memmove(str, str + keywordLen, strLen - keywordLen + 1);
+    }
 }
 
 int is_file_modified(const FileInfo *file_info) {
@@ -292,11 +307,46 @@ void *send_to_server(void *arg){
         strcpy(socketData.filename,files[lastChangeIndex].filename);
         socketData.status = files[lastChangeIndex].status;
         socketData.file_type = files[lastChangeIndex].file_type;
+        remove_parent_dir(socketData.filename);
 
-        if (files[lastChangeIndex].status == ADDED)
+        if (files[lastChangeIndex].status == ADDED && files[lastChangeIndex].file_type != T_DIR)
         {
+    
+            int fd = open(files[lastChangeIndex].filename, O_RDONLY);
+            if (fd == -1){
+                perror("[-] Open");
+                exit(EXIT_FAILURE);
+            }
+
+
+            int sent_bytes = send(socket, &socketData,  sizeof(SocketData), 0);
+            if (sent_bytes < 0){
+                perror("[-] Error sending data to socket");
+                exit(EXIT_FAILURE);
+            }
+
+
+            socketData.status = MODIFIED;
+            socketData.doneFlag = 0;
+            ssize_t read_bytes;
+            while ((read_bytes = read(fd, socketData.content, BUFFER_SIZE) > 0)) {
+
+                if ((int)read_bytes == -1)
+                    break;
+
+                sent_bytes = send(socket, &socketData,  sizeof(SocketData), 0);
+
+                if (sent_bytes < 0){
+                    perror("Error sending data to socket");
+                    break;
+                }
+            } 
+            socketData.doneFlag = 1;
+            close(fd); 
 
             printf("%s ADDED\n", files[lastChangeIndex].filename);
+
+
         }
         
         else if (files[lastChangeIndex].status == DELETED)
@@ -304,10 +354,34 @@ void *send_to_server(void *arg){
             printf("%s DELETED\n", files[lastChangeIndex].filename);
 
         }
-        else if (files[lastChangeIndex].status == MODIFIED)
+        else if (files[lastChangeIndex].status == MODIFIED && files[lastChangeIndex].file_type != T_DIR)
         {
-            printf("%s MODIFIED\n", files[lastChangeIndex].filename);
 
+            int fd = open(files[lastChangeIndex].filename, O_RDONLY);
+            if (fd == -1)
+            {
+                perror("[-] Open");
+                exit(EXIT_FAILURE);
+            }
+            socketData.doneFlag = 0;
+
+            ssize_t read_bytes;
+            while ((read_bytes = read(fd, socketData.content, BUFFER_SIZE) > 0)) {
+                
+                printf("Gönderdim\n");
+                if ((int)read_bytes == -1)
+                    break;
+
+
+                int sent_bytes = send(socket, &socketData, sizeof(SocketData), 0);
+                if (sent_bytes < 0){
+                    perror("Error sending data to socket");
+                    break;
+                }
+            }
+
+            socketData.doneFlag = 1; 
+            close(fd);
         }
 
         send(socket, &socketData,  sizeof(SocketData), 0);
@@ -316,9 +390,6 @@ void *send_to_server(void *arg){
         sem_post(&sender_sem);
     }
     
-
-    socketData.doneFlag = 10;
-
 }
 
 void set_new_timestamp(char *filename){
@@ -336,7 +407,7 @@ void receive_from_server(int socket){
 
     SocketData socketData;
     pthread_t sender_thread;
-    int equalize_finished = 0;
+    struct stat buffer;
     char fullpath[PATH_LENGTH*2];
     mkdir(dirname, 0777);
     
@@ -349,6 +420,16 @@ void receive_from_server(int socket){
         snprintf(fullpath, PATH_LENGTH*2, "%s/%s", dirname, socketData.filename);
         if(socketData.status == ADDED){
 
+            if (lastChangeIndex>0 &&strcmp(files[lastChangeIndex].filename, fullpath) == 0)
+            {
+                printf("This file already exists ADDED\n");
+                continue;
+            }
+            else{
+                printf("This file Doesnt exist ADDED\n");
+                
+            }
+            
             
             files = (FileInfo *)realloc(files, (file_count + 1) * sizeof(FileInfo));
             strcpy(files[file_count].filename, fullpath);
@@ -399,6 +480,14 @@ void receive_from_server(int socket){
 
         else if(socketData.status == MODIFIED){
 
+            if (lastChangeIndex>0 && strcmp(files[lastChangeIndex].filename, fullpath) == 0)
+            {
+                printf("This file already exists MODIFIED\n");              
+
+            }
+            else{
+
+
             printf("MODIFIED\n");
 
             int fd = open(fullpath, O_WRONLY | O_TRUNC , 0777);
@@ -432,6 +521,13 @@ void receive_from_server(int socket){
 
             set_new_timestamp(fullpath);
 
+
+
+                
+            }
+
+            
+
         }
 
         else if(socketData.status == FINISH_EQUALIZE){
@@ -440,7 +536,6 @@ void receive_from_server(int socket){
 
             printf("FINISH_EQUALIZE\n");
 
-            equalize_finished = 1;
 
             if (pthread_create(&sender_thread, NULL, send_to_server, (void *)&socket) != 0) {
                 fprintf(stderr, "Failed to create thread.\n");
