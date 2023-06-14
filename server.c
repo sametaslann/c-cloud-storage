@@ -28,10 +28,10 @@ enum FileType{T_DIR, T_REG, T_FIFO};
 
 //Structs
 typedef struct {
-    char filename[1024];
+    char filename[PATH_LENGTH];
     enum FileType file_type;
     enum Status status;
-    char content[4096];
+    char content[BUFFER_SIZE];
     int doneFlag;
 }SocketData;
 
@@ -53,11 +53,7 @@ typedef struct {
 pthread_t* threadPool;
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t files_mutex = PTHREAD_MUTEX_INITIALIZER;
-
 pthread_mutex_t que_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-pthread_mutex_t variable_mutex = PTHREAD_MUTEX_INITIALIZER;
-
 pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 pthread_cond_t que_cond = PTHREAD_COND_INITIALIZER;
 
@@ -209,6 +205,56 @@ int is_file_modified(const FileInfo *file_info) {
 }
 
 
+void remove_directory(const char *dir_name){
+
+     DIR* dir;
+    struct dirent* entry;
+    struct stat path_stat;
+
+    dir = opendir(dir_name);
+    if (dir == NULL) {
+        printf("Failed to open directory: %s\n", dir_name);
+        return;
+    }
+
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+            continue;
+
+        char path[PATH_LENGTH*2];
+        snprintf(path, sizeof(path), "%s/%s", dir_name, entry->d_name);
+
+        if (stat(path, &path_stat) != 0) {
+            printf("Failed to get file status: %s\n", path);
+            continue;
+        }
+
+        printf("%s \n ",entry->d_name);
+
+
+        if (entry->d_type == DT_DIR) {
+
+            remove_directory(path); 
+            int a = rmdir(path);
+            printf("return value: %d",a);
+        }
+        else{
+            remove(path);
+        }
+        
+    }
+
+    closedir(dir);
+
+    if (rmdir(dir_name) != 0) {
+        printf("Failed to remove directory: %s\n", dirname);
+    } else {
+        printf("Directory deleted successfully: %s\n", dirname);
+    }
+}
+
+
+
 void save_initial(const char *directory){
 
 
@@ -249,6 +295,8 @@ void save_initial(const char *directory){
 
 }
 
+
+
 void added_new_file_check(const char* directory){
 
 
@@ -268,6 +316,13 @@ void added_new_file_check(const char* directory){
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) 
             continue;
 
+
+        if (entry->d_type == DT_DIR)
+        {
+            snprintf(fullpath, PATH_LENGTH, "%s/%s", directory, entry->d_name);
+            added_new_file_check(fullpath);   //Recursive call
+        }
+
         int found = 0;
 
 
@@ -283,8 +338,6 @@ void added_new_file_check(const char* directory){
 
             FileInfo file_info;
             snprintf(file_info.filename, PATH_LENGTH, "%s/%s", directory, entry->d_name);
-
-           
 
             stat(file_info.filename, &file_info.last_modified);
 
@@ -317,11 +370,7 @@ void added_new_file_check(const char* directory){
                 sem_wait(&semaphore);
             
         }
-        if (entry->d_type == DT_DIR)
-        {
-            snprintf(fullpath, PATH_LENGTH, "%s/%s", directory, entry->d_name);
-            added_new_file_check(fullpath);   //Recursive call
-        }
+       
         
     }
 
@@ -549,6 +598,20 @@ void* receiverThreadFunction(void *arg){
             }
         }
         if (socketData.status == DELETED)
+
+            if (socketData.file_type == T_DIR){
+
+                remove_directory(fullpath);
+            }
+
+            else                        
+            {
+                if (remove(fullpath) == 0) 
+                    printf("File deleted successfully.\n");
+                else 
+                    printf("Unable to delete the file.\n");
+
+            }
         {
 
 
@@ -637,17 +700,13 @@ void* senderThreadFunction(void *arg){
             pthread_mutex_lock(&mutex);
             pthread_cond_wait(&cond, &mutex);
             pthread_mutex_unlock(&mutex);
-
-
             memset(socketData.content, 0, BUFFER_SIZE);
-
 
             if (lastFileChange.status == ADDED)
             {   
 
                 if (lastFileChange.file_type == T_DIR)
                 {
-
                     remove_parent_dir(lastFileChange.filename);
                     socketData.status = ADDED;
                     strcpy(socketData.filename,lastFileChange.filename);
@@ -664,9 +723,7 @@ void* senderThreadFunction(void *arg){
                 else if (lastFileChange.file_type == T_REG)
                 {
 
-                    // printf("New reg file addd\n");
                     ssize_t read_bytes;
-
                     int fd = open(lastFileChange.filename, O_RDONLY);
                     if (fd == -1)
                     {
@@ -679,7 +736,6 @@ void* senderThreadFunction(void *arg){
                     socketData.status = ADDED;
                     strcpy(socketData.filename,lastFileChange.filename);
                     socketData.file_type = lastFileChange.file_type;
-                    // socketData.content = NULL;
 
                     
                     int sent_bytes = send(client_sock, &socketData, sizeof(SocketData), 0);
@@ -693,17 +749,20 @@ void* senderThreadFunction(void *arg){
                     
                     socketData.status = MODIFIED;
                     socketData.doneFlag = 0;
-                    while ((read_bytes = read(fd, socketData.content, BUFFER_SIZE) > 0)) {
+                    while ((read_bytes = read(fd, socketData.content, BUFFER_SIZE)) > 0) {
+                        printf("Content Size: %d\n", read_bytes);
 
                         if ((int)read_bytes == -1)
                             break;
 
-                        sent_bytes = send(client_sock, &socketData,  sizeof(SocketData), 0);
 
+                        sent_bytes = send(client_sock, &socketData,  sizeof(SocketData), 0);
+                    
                         if (sent_bytes < 0){
                             perror("Error sending data to socket");
                             break;
                         }
+
                     }  
 
                     socketData.doneFlag = 1;
@@ -743,10 +802,7 @@ void* senderThreadFunction(void *arg){
 
             else if (lastFileChange.status == MODIFIED && lastFileChange.file_type != T_DIR)
             {
-
-
                 ssize_t read_bytes;
-
                 printf("%s MODIFIED\n", lastFileChange.filename);
 
                 int fd = open(lastFileChange.filename, O_RDONLY);
@@ -755,7 +811,6 @@ void* senderThreadFunction(void *arg){
                     perror("[-] Open");
                     exit(EXIT_FAILURE);
                 }
-
 
                 socketData.status = MODIFIED;
                 strcpy(socketData.filename,lastFileChange.filename);
@@ -784,13 +839,9 @@ void* senderThreadFunction(void *arg){
                 }
 
                 close(fd);
-
-                
-                
             }
             
             sem_post(&semaphore);
-            printf("SEM_POST\n");
         }
         
         

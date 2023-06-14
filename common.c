@@ -50,7 +50,6 @@ void enqueue(Queue* queue, int item)
 				% queue->capacity;
 	queue->array[queue->rear] = item;
 	queue->size = queue->size + 1;
-	printf("%d enqueued to queue\n", item);
 }
 
 // Function to remove an item from queue.

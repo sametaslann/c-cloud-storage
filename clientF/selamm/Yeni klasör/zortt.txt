@@ -1,1 +1,0 @@
-KDLASNMDKLNASKDNAKSNMDLKSAtData.file_type == T_REG);
