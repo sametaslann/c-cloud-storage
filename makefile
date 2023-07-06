@@ -18,5 +18,12 @@ client: $(CLIENT_OBJ)
 %.o: %.c
 	$(CC) $(CFLAGS) -c $<
 
+valgrind: $(server)
+	valgrind --leak-check=full --track-origins=yes --show-leak-kinds=all --gen-suppressions=all -s ./server
+
+valgrind: $(client)
+	valgrind --leak-check=full --track-origins=yes --show-leak-kinds=all --gen-suppressions=all -s ./client
+
+
 clean:
 	rm -f server client $(SERVER_OBJ) $(CLIENT_OBJ)
